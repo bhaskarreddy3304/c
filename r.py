@@ -1,4 +1,4 @@
-﻿import streamlit as st
+import streamlit as st
 import numpy as np
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
@@ -55,10 +55,10 @@ footer { visibility: hidden; }
 # HEADER
 # --------------------------------------------------
 st.markdown("<h1 style='text-align:center;'>⚖️ Legal AI – Speech Enabled Q&A</h1>", unsafe_allow_html=True)
-st.markdown("<p style='text-align:center;'>Streamlit Cloud Safe • Voice Input & Output</p>", unsafe_allow_html=True)
+st.markdown("<p style='text-align:center;'>Streamlit Cloud Safe • Browser Voice</p>", unsafe_allow_html=True)
 
 # --------------------------------------------------
-# LOAD MODEL
+# LOAD MODEL (CACHED)
 # --------------------------------------------------
 @st.cache_resource
 def load_model():
@@ -71,7 +71,7 @@ model = load_model()
 # --------------------------------------------------
 st.sidebar.header("📂 Upload Legal PDFs")
 files = st.sidebar.file_uploader(
-    "PDF only",
+    "Upload PDF files (max 5)",
     type=["pdf"],
     accept_multiple_files=True
 )
@@ -89,7 +89,7 @@ def split_text(text, size=800, overlap=150):
     return chunks
 
 # --------------------------------------------------
-# VECTOR SEARCH
+# VECTOR INDEX (SAFE)
 # --------------------------------------------------
 @st.cache_resource(show_spinner=True)
 def build_index(files):
@@ -98,34 +98,48 @@ def build_index(files):
     for f in files:
         reader = PdfReader(f)
         full_text = ""
+
         for page in reader.pages:
-            if page.extract_text():
-                full_text += page.extract_text()
+            text = page.extract_text()
+            if text:
+                full_text += text + " "
+
+        if not full_text.strip():
+            continue
 
         chunks = split_text(full_text)
         texts.extend(chunks)
         sources.extend([f.name] * len(chunks))
 
-    embeddings = model.encode(texts)
+    if not texts:
+        return None, None, None
+
+    embeddings = model.encode(
+        texts,
+        show_progress_bar=False,
+        batch_size=16
+    )
+
     nn = NearestNeighbors(n_neighbors=4, metric="cosine")
     nn.fit(embeddings)
 
     return nn, texts, sources
 
 # --------------------------------------------------
-# BROWSER SPEECH + TTS
+# BROWSER SPEECH + TTS (CLOUD SAFE)
 # --------------------------------------------------
 st.markdown("""
 <script>
 function startDictation() {
     if (!('webkitSpeechRecognition' in window)) {
-        alert("Speech Recognition not supported");
+        alert("Speech recognition not supported in this browser");
         return;
     }
     const recognition = new webkitSpeechRecognition();
     recognition.lang = "en-IN";
     recognition.onresult = function(e) {
-        document.getElementById("speech_input").value = e.results[0][0].transcript;
+        document.getElementById("speech_input").value =
+            e.results[0][0].transcript;
     };
     recognition.start();
 }
@@ -145,10 +159,17 @@ function speakText(text) {
 if files:
     nn, texts, sources = build_index(files)
 
+    if nn is None:
+        st.error("❌ No readable text found in PDFs")
+        st.stop()
+
     col1, col2 = st.columns([6, 1])
 
     with col1:
-        question = st.text_input("Ask a legal question", key="speech_input")
+        question = st.text_input(
+            "Ask a legal question",
+            key="speech_input"
+        )
 
     with col2:
         st.markdown(
@@ -157,13 +178,14 @@ if files:
         )
 
     if question:
-        with st.spinner("Searching legal documents..."):
-            q_emb = model.encode([question])
-            distances, indices = nn.kneighbors(q_emb)
+        with st.spinner("Searching documents..."):
+            q_emb = model.encode([question], show_progress_bar=False)
+            _, indices = nn.kneighbors(q_emb)
 
         st.markdown("## 📌 Relevant Answers")
 
         combined_answer = ""
+
         for idx in indices[0]:
             combined_answer += texts[idx] + " "
             st.markdown(
@@ -176,7 +198,7 @@ if files:
             )
 
         st.markdown(
-            f'<button class="btn" onclick="speakText(`{combined_answer[:2000]}`)">🔊 Read Answer</button>',
+            f'<button class="btn" onclick="speakText(`{combined_answer[:1500]}`)">🔊 Read Answer</button>',
             unsafe_allow_html=True
         )
 else:
